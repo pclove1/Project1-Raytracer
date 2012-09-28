@@ -40,8 +40,8 @@ __host__ __device__ glm::vec3 generateRandomNumberFromThread(glm::vec2 resolutio
 //Function that does the initial raycast from the camera
 __host__ __device__ ray raycastFromCameraKernel(glm::vec2 resolution, float time, int x, int y, glm::vec3 eye, glm::vec3 view, glm::vec3 up, glm::vec2 fov){
   ray r;
-  r.origin = glm::vec3(0,0,0);
-  r.direction = glm::vec3(0,0,-1);
+  r.origin = eye;
+  r.direction = glm::normalize(view);
   return r;
 }
 
@@ -92,16 +92,33 @@ __global__ void sendImageToPBO(uchar4* PBOpos, glm::vec2 resolution, glm::vec3* 
 //TODO: IMPLEMENT THIS FUNCTION
 //Core raytracer kernel
 __global__ void raytraceRay(glm::vec2 resolution, float time, cameraData cam, int rayDepth, glm::vec3* colors, 
-                            staticGeom* geoms, int numberOfGeoms){
+                            staticGeom* geoms, int numberOfGeoms,
+							material* materials, int numOfMaterials){
+	int x = (blockIdx.x * blockDim.x) + threadIdx.x;
+	int y = (blockIdx.y * blockDim.y) + threadIdx.y;
+	int index = x + (y * resolution.x);
 
-  int x = (blockIdx.x * blockDim.x) + threadIdx.x;
-  int y = (blockIdx.y * blockDim.y) + threadIdx.y;
-  int index = x + (y * resolution.x);
+	if((x<=resolution.x && y<=resolution.y)){
+	//	//colors[index] = generateRandomNumberFromThread(resolution, time, x, y);
+		ray r = raycastFromCameraKernel(resolution, time, x, y, cam.position, cam.view, cam.up, cam.fov);
+		colors[index] = glm::vec3(0, 0, 0);
+	//	glm::vec3 intersectionPoint, normal;
+	//	float intersectionLength;
+	//	for (int i = 0; i < numberOfGeoms; i++) {
+	//		if (geoms[i].type == SPHERE) {
+	//			intersectionLength = sphereIntersectionTest(geoms[i], r, intersectionPoint, normal);
+	//		} else if (geoms[i].type == CUBE) {
+	//			intersectionLength = boxIntersectionTest(geoms[i], r, intersectionPoint, normal);
+	//		}
 
-  if((x<=resolution.x && y<=resolution.y)){
+	//		if (intersectionLength < 0.f) {
+	//			// object is missed
+	//			continue; 
+	//		}
 
-    colors[index] = generateRandomNumberFromThread(resolution, time, x, y);
-   }
+	//		colors[index] = materials[geoms[i].materialid].color;
+	//	}
+	}
 }
 
 
@@ -121,7 +138,7 @@ void cudaRaytraceCore(uchar4* PBOpos, camera* renderCam, int frame, int iteratio
   cudaMalloc((void**)&cudaimage, (int)renderCam->resolution.x*(int)renderCam->resolution.y*sizeof(glm::vec3));
   cudaMemcpy( cudaimage, renderCam->image, (int)renderCam->resolution.x*(int)renderCam->resolution.y*sizeof(glm::vec3), cudaMemcpyHostToDevice);
   
-  //package geometry and materials and sent to GPU
+  //package geometry and send to GPU
   staticGeom* geomList = new staticGeom[numberOfGeoms];
   for(int i=0; i<numberOfGeoms; i++){
     staticGeom newStaticGeom;
@@ -138,6 +155,11 @@ void cudaRaytraceCore(uchar4* PBOpos, camera* renderCam, int frame, int iteratio
   staticGeom* cudageoms = NULL;
   cudaMalloc((void**)&cudageoms, numberOfGeoms*sizeof(staticGeom));
   cudaMemcpy( cudageoms, geomList, numberOfGeoms*sizeof(staticGeom), cudaMemcpyHostToDevice);
+
+  // package materials and send to GPU
+  material* cudaMaterials = NULL;
+  cudaMalloc((void**)&cudaMaterials, numberOfMaterials*sizeof(material));
+  cudaMemcpy(cudaMaterials, materials, numberOfMaterials*sizeof(material), cudaMemcpyHostToDevice);
   
   //package camera
   cameraData cam;
@@ -148,7 +170,7 @@ void cudaRaytraceCore(uchar4* PBOpos, camera* renderCam, int frame, int iteratio
   cam.fov = renderCam->fov;
 
   //kernel launches
-  raytraceRay<<<fullBlocksPerGrid, threadsPerBlock>>>(renderCam->resolution, (float)iterations, cam, traceDepth, cudaimage, cudageoms, numberOfGeoms);
+  raytraceRay<<<fullBlocksPerGrid, threadsPerBlock>>>(renderCam->resolution, (float)iterations, cam, traceDepth, cudaimage, cudageoms, numberOfGeoms, cudaMaterials, numberOfMaterials);
 
   sendImageToPBO<<<fullBlocksPerGrid, threadsPerBlock>>>(PBOpos, renderCam->resolution, cudaimage);
 
@@ -158,6 +180,7 @@ void cudaRaytraceCore(uchar4* PBOpos, camera* renderCam, int frame, int iteratio
   //free up stuff, or else we'll leak memory like a madman
   cudaFree( cudaimage );
   cudaFree( cudageoms );
+  cudaFree( cudaMaterials );
   delete geomList;
 
   // make certain the kernel has completed 

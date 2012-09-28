@@ -11,6 +11,7 @@
 #include "glm/glm.hpp"
 #include "utilities.h"
 #include <thrust/random.h>
+#include <algorithm>
 
 //Some forward declarations
 __host__ __device__ glm::vec3 getPointOnRay(ray r, float t);
@@ -71,8 +72,86 @@ __host__ __device__ glm::vec3 getSignOfRay(ray r){
 //TODO: IMPLEMENT THIS FUNCTION
 //Cube intersection test, return -1 if no intersection, otherwise, distance to intersection
 __host__ __device__  float boxIntersectionTest(staticGeom box, ray r, glm::vec3& intersectionPoint, glm::vec3& normal){
+	float minBound = -0.5f;
+	float maxBound = 0.5f;
 
-    return -1;
+	// transform the ray r to the object-space from the world-space
+	glm::vec3 ro = multiplyMV(box.inverseTransform, glm::vec4(r.origin, 1.0f));
+	glm::vec3 rd = glm::normalize(multiplyMV(box.inverseTransform, glm::vec4(r.direction, 0.0f)));
+	ray rt; rt.origin = ro; rt.direction = rd;
+
+	float t_near = -FLT_MAX;
+	float t_far = FLT_MAX;
+
+	// YZ plane(X is normal)
+	if (fabs(rt.direction.x) < EPSILON // rt is parallel to YZ plane
+		&& (rt.origin.x < minBound || rt.origin.x > maxBound)) {	
+		return -1;
+	} 
+	float dDiv = 1 / rt.direction.x;
+	float t1 = (minBound - rt.origin.x)*dDiv;
+	float t2 = (maxBound - rt.origin.x)*dDiv;
+	if (t2 > t1) std::swap(t1, t2);
+	if (t1 > t_near) t_near = t1;
+	if (t2 < t_far) t_far = t2;	
+	if (t_far < 0.f) return -1; // cube is behind
+
+	// ZX plane(Y is normal)
+	if (fabs(rt.direction.y) < EPSILON // rt is parallel to ZX plane
+		&& (rt.origin.y < minBound || rt.origin.y > maxBound)) {	
+		return -1;
+	} 
+	dDiv = 1 / rt.direction.y;
+	t1 = (minBound - rt.origin.y)*dDiv;
+	t2 = (maxBound - rt.origin.y)*dDiv;
+	if (t2 > t1) std::swap(t1, t2);
+	if (t1 > t_near) t_near = t1;
+	if (t2 < t_far) t_far = t2;	
+	if (t_near > t_far) return -1; // cube is missed
+	if (t_far < 0.f) return -1; // cube is behind
+
+	// XY plane(Z is normal)
+	if (fabs(rt.direction.z) < EPSILON // rt is parallel to XY plane
+		&& (rt.origin.z < minBound || rt.origin.z > maxBound)) {	
+		return -1;
+	} 
+	dDiv = 1 / rt.direction.z;
+	t1 = (minBound - rt.origin.z)*dDiv;
+	t2 = (maxBound - rt.origin.z)*dDiv;
+	if (t2 > t1) std::swap(t1, t2);
+	if (t1 > t_near) t_near = t1;
+	if (t2 < t_far) t_far = t2;	
+	if (t_near > t_far) return -1; // cube is missed
+	if (t_far < 0.f) return -1; // cube is behind
+
+	// compute the final t
+	float t = t_near;
+	if (t_near < 0.f) t = t_far;
+
+	// compute the real intersection point
+	glm::vec3 intersectionPointInObjectSpace = getPointOnRay(rt, t);
+	glm::vec3 realIntersectionPoint = multiplyMV(box.transform, glm::vec4(intersectionPointInObjectSpace, 1.0f));
+	intersectionPoint = realIntersectionPoint;
+
+	//TODO: normal should be computed differently
+	if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.x, 0.5f)) {
+		normal = glm::vec3(1.f, 0.f, 0.f);
+	} else if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.x, -0.5f)) {
+		normal = glm::vec3(-1.f, 0.f, 0.f);
+	} else if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.y, 0.5f)) {
+		normal = glm::vec3(0.f, 1.f, 0.f);
+	} else if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.y, -0.5f)) {
+		normal = glm::vec3(0.f, -1.f, 0.f);
+	} else if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.z, 0.5f)) {
+		normal = glm::vec3(0.f, 0.f, 1.f);
+	} else if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.z, -0.5f)) {
+		normal = glm::vec3(0.f, 0.f, -1.f);
+	} else {
+		std::fprintf(stderr, "boxIntersectionTest():Error in computing the normal of intersection between a ray and a cube.\n");
+		std::abort();
+	} 
+        
+	return glm::length(r.origin - realIntersectionPoint);    
 }
 
 //LOOK: Here's an intersection test example from a sphere. Now you just need to figure out cube and, optionally, triangle.

@@ -41,7 +41,10 @@ __host__ __device__ glm::vec3 generateRandomNumberFromThread(glm::vec2 resolutio
 __host__ __device__ ray raycastFromCameraKernel(glm::vec2 resolution, float time, int x, int y, glm::vec3 eye, glm::vec3 view, glm::vec3 up, glm::vec2 fov){
   ray r;
   r.origin = eye;
-  r.direction = glm::normalize(view);
+
+  glm::vec3 right = glm::normalize(glm::cross(view, up));
+  float d = 0.5f * resolution.y / tan(fov.y*(PI/180.f)); // distance from the eye to the image plane
+  r.direction = glm::normalize(view*d + right*(0.5f*resolution.x - x) + up*(0.5f*resolution.y - y));
   return r;
 }
 
@@ -66,8 +69,8 @@ __global__ void sendImageToPBO(uchar4* PBOpos, glm::vec2 resolution, glm::vec3* 
 
       glm::vec3 color;      
       color.x = image[index].x*255.0;
-      color.y = image[index].x*255.0;
-      color.z = image[index].x*255.0;
+      color.y = image[index].y*255.0;
+      color.z = image[index].z*255.0;
 
       if(color.x>255){
         color.x = 255;
@@ -99,25 +102,27 @@ __global__ void raytraceRay(glm::vec2 resolution, float time, cameraData cam, in
 	int index = x + (y * resolution.x);
 
 	if((x<=resolution.x && y<=resolution.y)){
-	//	//colors[index] = generateRandomNumberFromThread(resolution, time, x, y);
+		// colors[index] = generateRandomNumberFromThread(resolution, time, x, y);
+		colors[index] = glm::vec3(0.f, 0.f, 0.f);
 		ray r = raycastFromCameraKernel(resolution, time, x, y, cam.position, cam.view, cam.up, cam.fov);
-		colors[index] = glm::vec3(0, 0, 0);
-	//	glm::vec3 intersectionPoint, normal;
-	//	float intersectionLength;
-	//	for (int i = 0; i < numberOfGeoms; i++) {
-	//		if (geoms[i].type == SPHERE) {
-	//			intersectionLength = sphereIntersectionTest(geoms[i], r, intersectionPoint, normal);
-	//		} else if (geoms[i].type == CUBE) {
-	//			intersectionLength = boxIntersectionTest(geoms[i], r, intersectionPoint, normal);
-	//		}
+		
+		glm::vec3 intersectionPoint, normal;
+		float intersectionLength;
+		for (int i = 0; i < numberOfGeoms; i++) {
+			intersectionLength = -1.f;
+			if (geoms[i].type == SPHERE) {
+				intersectionLength = sphereIntersectionTest(geoms[i], r, intersectionPoint, normal);
+			} else if (geoms[i].type == CUBE) {
+				intersectionLength = boxIntersectionTest(geoms[i], r, intersectionPoint, normal);
+			}
 
-	//		if (intersectionLength < 0.f) {
-	//			// object is missed
-	//			continue; 
-	//		}
+			if (intersectionLength < 0.f) {
+				// object is missed
+				continue; 
+			}
 
-	//		colors[index] = materials[geoms[i].materialid].color;
-	//	}
+			colors[index] = materials[geoms[i].materialid].color;
+		}
 	}
 }
 

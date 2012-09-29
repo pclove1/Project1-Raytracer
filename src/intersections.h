@@ -80,6 +80,7 @@ __host__ __device__  float boxIntersectionTest(staticGeom box, ray r, glm::vec3&
 	glm::vec3 rd = glm::normalize(multiplyMV(box.inverseTransform, glm::vec4(r.direction, 0.0f)));
 	ray rt; rt.origin = ro; rt.direction = rd;
 
+	//TODO: find different constants for CUDA not for CPU
 	float t_near = -FLT_MAX;
 	float t_far = FLT_MAX;
 

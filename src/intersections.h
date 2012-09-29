@@ -11,7 +11,14 @@
 #include "glm/glm.hpp"
 #include "utilities.h"
 #include <thrust/random.h>
-#include <algorithm>
+
+__host__ __device__ void mySwap(float &a, float &b) // mySwap gives me a compilation error
+{
+  float temp = a;
+  a = b;
+  b = temp;
+}
+
 
 //Some forward declarations
 __host__ __device__ glm::vec3 getPointOnRay(ray r, float t);
@@ -92,7 +99,7 @@ __host__ __device__  float boxIntersectionTest(staticGeom box, ray r, glm::vec3&
 	float dDiv = 1 / rt.direction.x;
 	float t1 = (minBound - rt.origin.x)*dDiv;
 	float t2 = (maxBound - rt.origin.x)*dDiv;
-	if (t2 > t1) std::swap(t1, t2);
+	if (t1 > t2) mySwap(t1, t2);
 	if (t1 > t_near) t_near = t1;
 	if (t2 < t_far) t_far = t2;	
 	if (t_far < 0.f) return -1; // cube is behind
@@ -105,7 +112,7 @@ __host__ __device__  float boxIntersectionTest(staticGeom box, ray r, glm::vec3&
 	dDiv = 1 / rt.direction.y;
 	t1 = (minBound - rt.origin.y)*dDiv;
 	t2 = (maxBound - rt.origin.y)*dDiv;
-	if (t2 > t1) std::swap(t1, t2);
+	if (t1 > t2) mySwap(t1, t2);
 	if (t1 > t_near) t_near = t1;
 	if (t2 < t_far) t_far = t2;	
 	if (t_near > t_far) return -1; // cube is missed
@@ -119,7 +126,7 @@ __host__ __device__  float boxIntersectionTest(staticGeom box, ray r, glm::vec3&
 	dDiv = 1 / rt.direction.z;
 	t1 = (minBound - rt.origin.z)*dDiv;
 	t2 = (maxBound - rt.origin.z)*dDiv;
-	if (t2 > t1) std::swap(t1, t2);
+	if (t1 > t2) mySwap(t1, t2);
 	if (t1 > t_near) t_near = t1;
 	if (t2 < t_far) t_far = t2;	
 	if (t_near > t_far) return -1; // cube is missed
@@ -134,22 +141,18 @@ __host__ __device__  float boxIntersectionTest(staticGeom box, ray r, glm::vec3&
 	glm::vec3 realIntersectionPoint = multiplyMV(box.transform, glm::vec4(intersectionPointInObjectSpace, 1.0f));
 	intersectionPoint = realIntersectionPoint;
 
-	//TODO: normal should be computed differently
-	if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.x, 0.5f)) {
+	if (fabs(intersectionPointInObjectSpace.x - 0.5f) < EPSILON) {
 		normal = glm::vec3(1.f, 0.f, 0.f);
-	} else if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.x, -0.5f)) {
+	} else if (fabs(intersectionPointInObjectSpace.x + 0.5f) < EPSILON) {
 		normal = glm::vec3(-1.f, 0.f, 0.f);
-	} else if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.y, 0.5f)) {
+	} else if (fabs(intersectionPointInObjectSpace.y - 0.5f) < EPSILON) {
 		normal = glm::vec3(0.f, 1.f, 0.f);
-	} else if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.y, -0.5f)) {
+	} else if (fabs(intersectionPointInObjectSpace.y + 0.5f) < EPSILON) {
 		normal = glm::vec3(0.f, -1.f, 0.f);
-	} else if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.z, 0.5f)) {
+	} else if (fabs(intersectionPointInObjectSpace.z - 0.5f) < EPSILON) {
 		normal = glm::vec3(0.f, 0.f, 1.f);
-	} else if (utilityCore::epsilonCheck(intersectionPointInObjectSpace.z, -0.5f)) {
+	} else if (fabs(intersectionPointInObjectSpace.z + 0.5f) < EPSILON) {
 		normal = glm::vec3(0.f, 0.f, -1.f);
-	} else {
-		std::fprintf(stderr, "boxIntersectionTest():Error in computing the normal of intersection between a ray and a cube.\n");
-		std::abort();
 	} 
         
 	return glm::length(r.origin - realIntersectionPoint);    

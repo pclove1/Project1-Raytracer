@@ -15,7 +15,6 @@
 #include "raytraceKernel.h"
 #include "intersections.h"
 #include "interactions.h"
-#include <vector>
 
 void checkCUDAError(const char *msg) {
   cudaError_t err = cudaGetLastError();
@@ -107,21 +106,28 @@ __global__ void raytraceRay(glm::vec2 resolution, float time, cameraData cam, in
 		ray r = raycastFromCameraKernel(resolution, time, x, y, cam.position, cam.view, cam.up, cam.fov);
 		
 		glm::vec3 intersectionPoint, normal;
-		float intersectionLength;
-		for (int i = 0; i < numberOfGeoms; i++) {
-			intersectionLength = -1.f;
+		float intersectionDistance;
+		float closestDistance = FLT_MAX;
+		int closestMaterialInd = -1;
+		for (int i = 0; i < numberOfGeoms; i++) { // for each object
 			if (geoms[i].type == SPHERE) {
-				intersectionLength = sphereIntersectionTest(geoms[i], r, intersectionPoint, normal);
+				intersectionDistance = sphereIntersectionTest(geoms[i], r, intersectionPoint, normal);
 			} else if (geoms[i].type == CUBE) {
-				intersectionLength = boxIntersectionTest(geoms[i], r, intersectionPoint, normal);
+				intersectionDistance = boxIntersectionTest(geoms[i], r, intersectionPoint, normal);
+			} else { // not-supported object type
+				continue;
 			}
 
-			if (intersectionLength < 0.f) {
-				// object is missed
+			if (intersectionDistance < 0.f) { // object is missed
 				continue; 
+			} else if (intersectionDistance < closestDistance) { // closer is found
+				closestDistance = intersectionDistance;
+				closestMaterialInd = geoms[i].materialid;
 			}
+		}
 
-			colors[index] = materials[geoms[i].materialid].color;
+		if (closestMaterialInd != -1) {
+			colors[index] = materials[closestMaterialInd].color; // temporary for debugging
 		}
 	}
 }

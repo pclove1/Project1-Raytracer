@@ -44,7 +44,7 @@ __host__ __device__ ray raycastFromCameraKernel(glm::vec2 resolution, float time
   glm::vec3 right = glm::normalize(glm::cross(view, up));
   //TODO: use glm::tan and glm::radians
   float d = 0.5f * resolution.y / tan(fov.y*(PI/180.f)); // distance from the eye to the image plane
-  r.direction = glm::normalize(view*d + right*(0.5f*resolution.x - x) + up*(0.5f*resolution.y - y));
+  r.direction = glm::normalize(view*d + right*(x - 0.5f*resolution.x) + up*(0.5f*resolution.y - y));
   return r;
 }
 

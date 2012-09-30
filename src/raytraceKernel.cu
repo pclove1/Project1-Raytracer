@@ -156,8 +156,9 @@ __global__ void raytraceRay(glm::vec2 resolution, float time, cameraData cam, in
 				}
 			}
 
-			colors[index] = glm::clamp(0.3f*diffuseColor + diffuseColor*diffuse_sum + specularColor*specular_sum, 0.f, 1.f); 
-			//colors[index] = glm::clamp(0.3f*diffuseColor + diffuseColor*diffuse_sum, 0.f, 1.f); 
+			colors[index] = glm::clamp(0.2f*diffuseColor + diffuseColor*diffuse_sum + specularColor*specular_sum, 0.f, 1.f); 
+			//colors[index] = glm::clamp(0.2f*diffuseColor + diffuseColor*diffuse_sum, 0.f, 1.f); 
+			//colors[index] = normal;
 		}
 	}
 }

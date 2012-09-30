@@ -49,7 +49,7 @@ __host__ __device__ glm::vec3 calculateReflectionDirection(glm::vec3 normal, glm
   return glm::vec3(0,0,0);
 }
 
-//TODO (OPTIONAL): IMPLEMENT THIS FUNCTION
+//TODO (OPTIONAL): IMPLEMENT THIS FUNCTION67
 __host__ __device__ Fresnel calculateFresnel(glm::vec3 normal, glm::vec3 incident, float incidentIOR, float transmittedIOR, glm::vec3 reflectionDirection, glm::vec3 transmissionDirection) {
   Fresnel fresnel;
 

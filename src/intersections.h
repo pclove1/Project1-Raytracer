@@ -154,14 +154,19 @@ __host__ __device__  float boxIntersectionTest(staticGeom box, ray r, glm::vec3&
 	float yLength = fabs(intersectionPointInObjectSpace.y);
 	float zLength = fabs(intersectionPointInObjectSpace.z);
 	if (xLength > yLength && xLength > zLength) {
-		if (intersectionPointInObjectSpace.x > 0.f) normalInObjectSpace = glm::vec3(-1.f, 0.f, 0.f);
-		else normalInObjectSpace = glm::vec3(1.f, 0.f, 0.f);
+		normalInObjectSpace = glm::vec3(-intersectionPointInObjectSpace.x, 0.f, 0.f);
 	} else if (yLength > xLength && yLength > zLength) {
-		if (intersectionPointInObjectSpace.y > 0.f) normalInObjectSpace = glm::vec3(0.f, -1.f, 0.f);
-		else normalInObjectSpace = glm::vec3(0.f, 1.f, 0.f);
+		normalInObjectSpace = glm::vec3(0.f, -intersectionPointInObjectSpace.y, 0.f);
+	} else if (zLength > xLength && zLength > yLength) {
+		normalInObjectSpace = glm::vec3(0.f, 0.f, -intersectionPointInObjectSpace.z);
+	} else if (xLength < yLength && xLength < zLength) { // edges where both y and z are at the miximum bound
+		normalInObjectSpace = glm::vec3(0.f, -intersectionPointInObjectSpace.y, -intersectionPointInObjectSpace.z);
+	} else if (yLength < xLength && yLength < zLength) { // edges where both x and z are at the miximum bound
+		normalInObjectSpace = glm::vec3(-intersectionPointInObjectSpace.x, 0.f, -intersectionPointInObjectSpace.z);
+	} else if (zLength < xLength && zLength < yLength) { // edges where both x and y are at the miximum bound
+		normalInObjectSpace = glm::vec3(-intersectionPointInObjectSpace.x, -intersectionPointInObjectSpace.y, 0.f);
 	} else {
-		if (intersectionPointInObjectSpace.z > 0.f) normalInObjectSpace = glm::vec3(0.f, 0.f, -1.f);
-		else normalInObjectSpace = glm::vec3(0.f, 0.f, 1.f);
+		normalInObjectSpace = -intersectionPointInObjectSpace;
 	}
 
 	if (isOriginOutsideBox(rt.origin)) { 

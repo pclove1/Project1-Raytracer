@@ -109,14 +109,19 @@ __global__ void raytraceRay(glm::vec2 resolution, float time, cameraData cam, in
 		
 		glm::vec3 intersectionPoint, normal;
 		float intersectionDistance;
-		int intersectionMaterialInd;
-		bool isFound = findClosestIntersection(geoms, numberOfGeoms, r,
-			&intersectionPoint, &normal, &intersectionDistance, &intersectionMaterialInd);
+		int intersectionGeomInd = findClosestIntersection(geoms, numberOfGeoms, r,
+			&intersectionPoint, &normal, &intersectionDistance);
 
-		if (isFound) { // found the closest front object
-			const material& objectMaterial = materials[intersectionMaterialInd];
+		if (intersectionGeomInd != -1) { // found the closest front object
+			const material& objectMaterial = materials[geoms[intersectionGeomInd].materialid];
 			glm::vec3 diffuseColor = objectMaterial.color;
 			glm::vec3 specularColor = objectMaterial.specularColor;
+
+			if (objectMaterial.emittance > EPSILON) {
+				// object to be rendered is a light source
+				colors[index] = diffuseColor;
+				return;
+			}
 
 			/* Phong Illumination Model */
 			/* ka*diffuse_color + kd*diffuse_color*(N*L) + ks*specular_color*(N*H)^exp_n 
@@ -126,54 +131,33 @@ __global__ void raytraceRay(glm::vec2 resolution, float time, cameraData cam, in
 			glm::vec3 diffuse_sum(0.f, 0.f, 0.f);
 			glm::vec3 specular_sum(0.f, 0.f, 0.f);
 			for (int i = 0; i < numOfLights; i++) { // for each light source
-				const staticGeom& light = geoms[lightIndices[i]];
+				int lightInd = lightIndices[i];
+				const staticGeom& light = geoms[lightInd];
 				glm::vec3 lightCenter = multiplyMV(light.transform, glm::vec4(0.f, 0.f, 0.f, 1.0f));
 				glm::vec3 lightDirection = glm::normalize(lightCenter - intersectionPoint);
 
-				// TODO: move the intersection point toward each light a little bit to avoid numerical error
-				//intersectionPoint = intersectionPoint + lightDirection*0.1f; // seems no difference
-
-				// TODO: check occulusion for shadow
-				// TODO: modulize this part
-				//float intersectionDistance;
-				ray lightRay; lightRay.origin = intersectionPoint - lightDirection*0.1f; lightRay.direction = lightDirection;
-				//bool isOccluded = false;
-				//for (int j = 0; j < numberOfGeoms; j++) {
-				//	if (geoms[j].type == SPHERE) {
-				//		isOccluded = sphereIntersectionTest(geoms[j], lightRay);
-				//	} else if (geoms[j].type == CUBE) {
-				//		isOccluded = boxIntersectionTest(geoms[j], lightRay);
-				//	} else { // not-supported object type
-				//		continue;
-				//	}
-
-				//	if (isOccluded) break;
-				//}
-
-				//if (isOccluded) continue;
-
-				//glm::vec3 dummyVec3;
-				//int dummyInt;
-				//float obstacleDistance;
-				//isFound = findClosestIntersection(geoms, numberOfGeoms, lightRay,
-				//		&dummyVec3, &dummyVec3, &obstacleDistance, &dummyInt);
-				//if (isFound && obstacleDistance < glm::length(lightCenter - intersectionPoint)) {
-				//	continue;
-				//}
+				// check occulusion for shadow
+				// NOTE: move the intersection point toward each light a little bit to avoid numerical error
+				ray lightRay; lightRay.origin = intersectionPoint + lightDirection*float(RAY_BIAS_AMOUNT); lightRay.direction = lightDirection;
+				int obstacleGeomInd = findClosestIntersection(geoms, numberOfGeoms, lightRay);
+				if (obstacleGeomInd != lightInd) {
+					continue;
+				}
 				
 				glm::vec3 V = glm::normalize(-r.direction);
 				glm::vec3 H = glm::normalize(lightDirection + V);
 
 				const material& lightMaterial = materials[light.materialid];
-				diffuse_sum += diffuseColor * max(0.f, glm::dot(normal, lightDirection));
+				glm::vec3 lightColor = lightMaterial.color;
+				diffuse_sum += lightColor * max(0.f, glm::dot(normal, lightDirection));
 
-				if (glm::dot(normal, H) > 0.f) {
-					specular_sum += specularColor * (glm::pow(glm::dot(normal, H), objectMaterial.specularExponent));
+				if (glm::dot(normal, H) > EPSILON) {
+					specular_sum += lightColor * (glm::pow(glm::dot(normal, H), objectMaterial.specularExponent));
 				}
 			}
 
-			//colors[index] = glm::clamp(diffuseColor + diffuse_sum + specular_sum, 0.f, 1.f); 
-			colors[index] = glm::clamp(0.2f*diffuseColor + diffuse_sum + specular_sum, 0.f, 1.f); 
+			colors[index] = glm::clamp(0.3f*diffuseColor + diffuseColor*diffuse_sum + specularColor*specular_sum, 0.f, 1.f); 
+			//colors[index] = glm::clamp(0.3f*diffuseColor + diffuseColor*diffuse_sum, 0.f, 1.f); 
 		}
 	}
 }
@@ -210,7 +194,7 @@ void cudaRaytraceCore(uchar4* PBOpos, camera* renderCam, int frame, int iteratio
     newStaticGeom.inverseTransform = geoms[i].inverseTransforms[frame];
     geomList[i] = newStaticGeom;
 
-	if (materials[newStaticGeom.materialid].emittance > 0.f) {
+	if (materials[newStaticGeom.materialid].emittance > EPSILON) {
 		lightIndices[numOfLights++] = i;
 	}
   }

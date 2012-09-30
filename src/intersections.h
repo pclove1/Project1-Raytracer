@@ -26,8 +26,13 @@ __host__ __device__ glm::vec3 multiplyMV(cudaMat4 m, glm::vec4 v);
 __host__ __device__ glm::vec3 getSignOfRay(ray r);
 __host__ __device__ glm::vec3 getInverseDirectionOfRay(ray r);
 __host__ __device__ float boxIntersectionTest(staticGeom sphere, ray r, glm::vec3& intersectionPoint, glm::vec3& normal);
+__host__ __device__ bool boxIntersectionTest(staticGeom box, ray r);
 __host__ __device__ float sphereIntersectionTest(staticGeom sphere, ray r, glm::vec3& intersectionPoint, glm::vec3& normal);
+__host__ __device__ bool sphereIntersectionTest(staticGeom sphere, ray r);
 __host__ __device__ glm::vec3 getRandomPointOnCube(staticGeom cube, float randomSeed);
+__host__ __device__ bool findClosestIntersection(const staticGeom* geoms, int numOfGeoms, const ray& r, 
+												glm::vec3* closestIntersection, glm::vec3* closestIntersectionNormal, 
+												float* closestDistance, int* closestMaterialInd);
 
 //Handy dandy little hashing function that provides seeds for random number generation
 __host__ __device__ unsigned int hash(unsigned int a){
@@ -138,24 +143,83 @@ __host__ __device__  float boxIntersectionTest(staticGeom box, ray r, glm::vec3&
 
 	// compute the real intersection point
 	glm::vec3 intersectionPointInObjectSpace = getPointOnRay(rt, t);
-	glm::vec3 realIntersectionPoint = multiplyMV(box.transform, glm::vec4(intersectionPointInObjectSpace, 1.0f));
-	intersectionPoint = realIntersectionPoint;
+	intersectionPoint = multiplyMV(box.transform, glm::vec4(intersectionPointInObjectSpace, 1.0f));
 
+	glm::vec3 normalInObjectSpace;
 	if (fabs(intersectionPointInObjectSpace.x - 0.5f) < EPSILON) {
-		normal = glm::vec3(1.f, 0.f, 0.f);
+		normalInObjectSpace = glm::vec3(1.f, 0.f, 0.f);
 	} else if (fabs(intersectionPointInObjectSpace.x + 0.5f) < EPSILON) {
-		normal = glm::vec3(-1.f, 0.f, 0.f);
+		normalInObjectSpace = glm::vec3(-1.f, 0.f, 0.f);
 	} else if (fabs(intersectionPointInObjectSpace.y - 0.5f) < EPSILON) {
-		normal = glm::vec3(0.f, 1.f, 0.f);
+		normalInObjectSpace = glm::vec3(0.f, 1.f, 0.f);
 	} else if (fabs(intersectionPointInObjectSpace.y + 0.5f) < EPSILON) {
-		normal = glm::vec3(0.f, -1.f, 0.f);
+		normalInObjectSpace = glm::vec3(0.f, -1.f, 0.f);
 	} else if (fabs(intersectionPointInObjectSpace.z - 0.5f) < EPSILON) {
-		normal = glm::vec3(0.f, 0.f, 1.f);
+		normalInObjectSpace = glm::vec3(0.f, 0.f, 1.f);
 	} else if (fabs(intersectionPointInObjectSpace.z + 0.5f) < EPSILON) {
-		normal = glm::vec3(0.f, 0.f, -1.f);
+		normalInObjectSpace = glm::vec3(0.f, 0.f, -1.f);
 	} 
+	// don't forget to transform normal in object space to real-world space
+	normal = glm::normalize(multiplyMV(box.transform, glm::vec4(normalInObjectSpace, 1.0f)));
         
-	return glm::length(r.origin - realIntersectionPoint);    
+	return glm::length(r.origin - intersectionPoint);    
+}
+
+__host__ __device__ bool boxIntersectionTest(staticGeom box, ray r) {
+	float minBound = -0.5f;
+	float maxBound = 0.5f;
+
+	// transform the ray r to the object-space from the world-space
+	glm::vec3 ro = multiplyMV(box.inverseTransform, glm::vec4(r.origin, 1.0f));
+	glm::vec3 rd = glm::normalize(multiplyMV(box.inverseTransform, glm::vec4(r.direction, 0.0f)));
+	ray rt; rt.origin = ro; rt.direction = rd;
+
+	//TODO: find different constants for CUDA not for CPU
+	float t_near = -FLT_MAX;
+	float t_far = FLT_MAX;
+
+	// YZ plane(X is normal)
+	if (fabs(rt.direction.x) < EPSILON // rt is parallel to YZ plane
+		&& (rt.origin.x < minBound || rt.origin.x > maxBound)) {	
+		return false;
+	} 
+	float dDiv = 1 / rt.direction.x;
+	float t1 = (minBound - rt.origin.x)*dDiv;
+	float t2 = (maxBound - rt.origin.x)*dDiv;
+	if (t1 > t2) mySwap(t1, t2);
+	if (t1 > t_near) t_near = t1;
+	if (t2 < t_far) t_far = t2;	
+	if (t_far < 0.f) return false; // cube is behind
+
+	// ZX plane(Y is normal)
+	if (fabs(rt.direction.y) < EPSILON // rt is parallel to ZX plane
+		&& (rt.origin.y < minBound || rt.origin.y > maxBound)) {	
+		return false;
+	} 
+	dDiv = 1 / rt.direction.y;
+	t1 = (minBound - rt.origin.y)*dDiv;
+	t2 = (maxBound - rt.origin.y)*dDiv;
+	if (t1 > t2) mySwap(t1, t2);
+	if (t1 > t_near) t_near = t1;
+	if (t2 < t_far) t_far = t2;	
+	if (t_near > t_far) return false; // cube is missed
+	if (t_far < 0.f) return false; // cube is behind
+
+	// XY plane(Z is normal)
+	if (fabs(rt.direction.z) < EPSILON // rt is parallel to XY plane
+		&& (rt.origin.z < minBound || rt.origin.z > maxBound)) {	
+		return false;
+	} 
+	dDiv = 1 / rt.direction.z;
+	t1 = (minBound - rt.origin.z)*dDiv;
+	t2 = (maxBound - rt.origin.z)*dDiv;
+	if (t1 > t2) mySwap(t1, t2);
+	if (t1 > t_near) t_near = t1;
+	if (t2 < t_far) t_far = t2;	
+	if (t_near > t_far) return false; // cube is missed
+	if (t_far < 0.f) return false; // cube is behind
+
+	return true;; 
 }
 
 //LOOK: Here's an intersection test example from a sphere. Now you just need to figure out cube and, optionally, triangle.
@@ -196,6 +260,32 @@ __host__ __device__  float sphereIntersectionTest(staticGeom sphere, ray r, glm:
   normal = glm::normalize(realIntersectionPoint - realOrigin);   
         
   return glm::length(r.origin - realIntersectionPoint);
+}
+
+__host__ __device__ bool sphereIntersectionTest(staticGeom sphere, ray r) {
+  float radius = .5;
+        
+  glm::vec3 ro = multiplyMV(sphere.inverseTransform, glm::vec4(r.origin,1.0f));
+  glm::vec3 rd = glm::normalize(multiplyMV(sphere.inverseTransform, glm::vec4(r.direction,0.0f)));
+
+  ray rt; rt.origin = ro; rt.direction = rd;
+  
+  float vDotDirection = glm::dot(rt.origin, rt.direction);
+  float radicand = vDotDirection * vDotDirection - (glm::dot(rt.origin, rt.origin) - pow(radius, 2));
+  if (radicand < 0){
+    return false;
+  }
+  
+  float squareRoot = sqrt(radicand);
+  float firstTerm = -vDotDirection;
+  float t1 = firstTerm + squareRoot;
+  float t2 = firstTerm - squareRoot;
+  
+  if (t1 < 0 && t2 < 0) {
+      return false;
+  } 
+
+  return true;
 }
 
 //returns x,y,z half-dimensions of tightest bounding box
@@ -261,6 +351,36 @@ __host__ __device__ glm::vec3 getRandomPointOnCube(staticGeom cube, float random
 __host__ __device__ glm::vec3 getRandomPointOnSphere(staticGeom sphere, float randomSeed){
 
   return glm::vec3(0,0,0);
+}
+
+__host__ __device__ bool findClosestIntersection(const staticGeom* geoms, int numOfGeoms, const ray& r, 
+												glm::vec3* closestIntersection, glm::vec3* closestIntersectionNormal, 
+												float* closestDistance, int* closestMaterialInd) {
+	glm::vec3 intersectionPoint, normal;
+	float intersectionDistance;
+	*closestDistance = FLT_MAX;
+	*closestMaterialInd = -1;
+
+	for (int i = 0; i < numOfGeoms; i++) { // for each object
+		if (geoms[i].type == SPHERE) {
+			intersectionDistance = sphereIntersectionTest(geoms[i], r, intersectionPoint, normal);
+		} else if (geoms[i].type == CUBE) {
+			intersectionDistance = boxIntersectionTest(geoms[i], r, intersectionPoint, normal);
+		} else { // not-supported object type
+			continue;
+		}
+
+		if (intersectionDistance < 0.f) { // object is missed
+			continue; 
+		} else if (intersectionDistance < *closestDistance) { // closer is found
+			*closestDistance = intersectionDistance;
+			*closestMaterialInd = geoms[i].materialid;
+			*closestIntersection = intersectionPoint;
+			*closestIntersectionNormal = normal;
+		}
+	}	
+
+	return (*closestMaterialInd != -1);
 }
 
 #endif

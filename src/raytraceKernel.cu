@@ -42,6 +42,7 @@ __host__ __device__ ray raycastFromCameraKernel(glm::vec2 resolution, float time
   r.origin = eye;
 
   glm::vec3 right = glm::normalize(glm::cross(view, up));
+  //TODO: use glm::tan and glm::radians
   float d = 0.5f * resolution.y / tan(fov.y*(PI/180.f)); // distance from the eye to the image plane
   r.direction = glm::normalize(view*d + right*(0.5f*resolution.x - x) + up*(0.5f*resolution.y - y));
   return r;
@@ -95,7 +96,8 @@ __global__ void sendImageToPBO(uchar4* PBOpos, glm::vec2 resolution, glm::vec3* 
 //Core raytracer kernel
 __global__ void raytraceRay(glm::vec2 resolution, float time, cameraData cam, int rayDepth, glm::vec3* colors, 
                             staticGeom* geoms, int numberOfGeoms,
-							material* materials, int numOfMaterials){
+							const material* materials, int numOfMaterials,
+							const int* lightIndices, int numOfLights){
 	int x = (blockIdx.x * blockDim.x) + threadIdx.x;
 	int y = (blockIdx.y * blockDim.y) + threadIdx.y;
 	int index = x + (y * resolution.x);
@@ -107,27 +109,71 @@ __global__ void raytraceRay(glm::vec2 resolution, float time, cameraData cam, in
 		
 		glm::vec3 intersectionPoint, normal;
 		float intersectionDistance;
-		float closestDistance = FLT_MAX;
-		int closestMaterialInd = -1;
-		for (int i = 0; i < numberOfGeoms; i++) { // for each object
-			if (geoms[i].type == SPHERE) {
-				intersectionDistance = sphereIntersectionTest(geoms[i], r, intersectionPoint, normal);
-			} else if (geoms[i].type == CUBE) {
-				intersectionDistance = boxIntersectionTest(geoms[i], r, intersectionPoint, normal);
-			} else { // not-supported object type
-				continue;
+		int intersectionMaterialInd;
+		bool isFound = findClosestIntersection(geoms, numberOfGeoms, r,
+			&intersectionPoint, &normal, &intersectionDistance, &intersectionMaterialInd);
+
+		if (isFound) { // found the closest front object
+			const material& objectMaterial = materials[intersectionMaterialInd];
+			glm::vec3 diffuseColor = objectMaterial.color;
+			glm::vec3 specularColor = objectMaterial.specularColor;
+
+			/* Phong Illumination Model */
+			/* ka*diffuse_color + kd*diffuse_color*(N*L) + ks*specular_color*(N*H)^exp_n 
+			 * N(normal) : unit vector, the direction of the surface normal at the intersection 
+			 * L(ligtDirection) : unit vector, the direction of the vector to the light source from the intersection 
+			 * H : unit vector, the direction that is halfway between the direction to the light and the direction to the viewer */
+			glm::vec3 diffuse_sum(0.f, 0.f, 0.f);
+			glm::vec3 specular_sum(0.f, 0.f, 0.f);
+			for (int i = 0; i < numOfLights; i++) { // for each light source
+				const staticGeom& light = geoms[lightIndices[i]];
+				glm::vec3 lightCenter = multiplyMV(light.transform, glm::vec4(0.f, 0.f, 0.f, 1.0f));
+				glm::vec3 lightDirection = glm::normalize(lightCenter - intersectionPoint);
+
+				// TODO: move the intersection point toward each light a little bit to avoid numerical error
+				//intersectionPoint = intersectionPoint + lightDirection*0.1f; // seems no difference
+
+				// TODO: check occulusion for shadow
+				// TODO: modulize this part
+				//float intersectionDistance;
+				ray lightRay; lightRay.origin = intersectionPoint - lightDirection*0.1f; lightRay.direction = lightDirection;
+				//bool isOccluded = false;
+				//for (int j = 0; j < numberOfGeoms; j++) {
+				//	if (geoms[j].type == SPHERE) {
+				//		isOccluded = sphereIntersectionTest(geoms[j], lightRay);
+				//	} else if (geoms[j].type == CUBE) {
+				//		isOccluded = boxIntersectionTest(geoms[j], lightRay);
+				//	} else { // not-supported object type
+				//		continue;
+				//	}
+
+				//	if (isOccluded) break;
+				//}
+
+				//if (isOccluded) continue;
+
+				//glm::vec3 dummyVec3;
+				//int dummyInt;
+				//float obstacleDistance;
+				//isFound = findClosestIntersection(geoms, numberOfGeoms, lightRay,
+				//		&dummyVec3, &dummyVec3, &obstacleDistance, &dummyInt);
+				//if (isFound && obstacleDistance < glm::length(lightCenter - intersectionPoint)) {
+				//	continue;
+				//}
+				
+				glm::vec3 V = glm::normalize(-r.direction);
+				glm::vec3 H = glm::normalize(lightDirection + V);
+
+				const material& lightMaterial = materials[light.materialid];
+				diffuse_sum += diffuseColor * max(0.f, glm::dot(normal, lightDirection));
+
+				if (glm::dot(normal, H) > 0.f) {
+					specular_sum += specularColor * (glm::pow(glm::dot(normal, H), objectMaterial.specularExponent));
+				}
 			}
 
-			if (intersectionDistance < 0.f) { // object is missed
-				continue; 
-			} else if (intersectionDistance < closestDistance) { // closer is found
-				closestDistance = intersectionDistance;
-				closestMaterialInd = geoms[i].materialid;
-			}
-		}
-
-		if (closestMaterialInd != -1) {
-			colors[index] = materials[closestMaterialInd].color; // temporary for debugging
+			//colors[index] = glm::clamp(diffuseColor + diffuse_sum + specular_sum, 0.f, 1.f); 
+			colors[index] = glm::clamp(0.2f*diffuseColor + diffuse_sum + specular_sum, 0.f, 1.f); 
 		}
 	}
 }
@@ -149,8 +195,10 @@ void cudaRaytraceCore(uchar4* PBOpos, camera* renderCam, int frame, int iteratio
   cudaMalloc((void**)&cudaimage, (int)renderCam->resolution.x*(int)renderCam->resolution.y*sizeof(glm::vec3));
   cudaMemcpy( cudaimage, renderCam->image, (int)renderCam->resolution.x*(int)renderCam->resolution.y*sizeof(glm::vec3), cudaMemcpyHostToDevice);
   
-  //package geometry and send to GPU
+  //package geometry and indices for lights and send them to GPU
   staticGeom* geomList = new staticGeom[numberOfGeoms];
+  int* lightIndices = new int[numberOfGeoms];
+  int numOfLights = 0;
   for(int i=0; i<numberOfGeoms; i++){
     staticGeom newStaticGeom;
     newStaticGeom.type = geoms[i].type;
@@ -161,11 +209,19 @@ void cudaRaytraceCore(uchar4* PBOpos, camera* renderCam, int frame, int iteratio
     newStaticGeom.transform = geoms[i].transforms[frame];
     newStaticGeom.inverseTransform = geoms[i].inverseTransforms[frame];
     geomList[i] = newStaticGeom;
+
+	if (materials[newStaticGeom.materialid].emittance > 0.f) {
+		lightIndices[numOfLights++] = i;
+	}
   }
   
   staticGeom* cudageoms = NULL;
   cudaMalloc((void**)&cudageoms, numberOfGeoms*sizeof(staticGeom));
   cudaMemcpy( cudageoms, geomList, numberOfGeoms*sizeof(staticGeom), cudaMemcpyHostToDevice);
+  
+  int* cudaLightIndices = NULL;
+  cudaMalloc((void**)&cudaLightIndices, numOfLights*sizeof(int));
+  cudaMemcpy( cudaLightIndices, lightIndices, numOfLights*sizeof(int), cudaMemcpyHostToDevice);
 
   // package materials and send to GPU
   material* cudaMaterials = NULL;
@@ -181,7 +237,8 @@ void cudaRaytraceCore(uchar4* PBOpos, camera* renderCam, int frame, int iteratio
   cam.fov = renderCam->fov;
 
   //kernel launches
-  raytraceRay<<<fullBlocksPerGrid, threadsPerBlock>>>(renderCam->resolution, (float)iterations, cam, traceDepth, cudaimage, cudageoms, numberOfGeoms, cudaMaterials, numberOfMaterials);
+  raytraceRay<<<fullBlocksPerGrid, threadsPerBlock>>>(renderCam->resolution, (float)iterations, cam, traceDepth, cudaimage, 
+	  cudageoms, numberOfGeoms, cudaMaterials, numberOfMaterials, cudaLightIndices, numOfLights);
 
   sendImageToPBO<<<fullBlocksPerGrid, threadsPerBlock>>>(PBOpos, renderCam->resolution, cudaimage);
 
@@ -192,7 +249,9 @@ void cudaRaytraceCore(uchar4* PBOpos, camera* renderCam, int frame, int iteratio
   cudaFree( cudaimage );
   cudaFree( cudageoms );
   cudaFree( cudaMaterials );
+  cudaFree( cudaLightIndices );
   delete geomList;
+  delete lightIndices;
 
   // make certain the kernel has completed 
   cudaThreadSynchronize();

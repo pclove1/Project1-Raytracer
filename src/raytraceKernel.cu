@@ -15,6 +15,11 @@
 #include "raytraceKernel.h"
 #include "intersections.h"
 #include "interactions.h"
+#include "glm/gtx/vector_access.hpp"
+
+// 2x2 rays will be generated for each pixel, this is assumed to be even number
+// Special case: 1 means Anti-Aliasing is disabled.
+#define SUPER_SAMPLE_GRID_SIZE 2	
 
 void checkCUDAError(const char *msg) {
   cudaError_t err = cudaGetLastError();
@@ -46,6 +51,36 @@ __host__ __device__ ray raycastFromCameraKernel(glm::vec2 resolution, float time
   float d = 0.5f * resolution.y / tan(fov.y*(PI/180.f)); // distance from the eye to the image plane
   r.direction = glm::normalize(view*d + right*(x - 0.5f*resolution.x) + up*(0.5f*resolution.y - y));
   return r;
+}
+
+//Function that does the initial raycast from the camera
+__host__ __device__ void superSampleRays(ray rays[], const glm::vec2& resolution, float time, int x, int y, 
+	const glm::vec3& eye, const glm::vec3& view, const glm::vec3& up, const glm::vec2& fov){
+
+	glm::vec3 right = glm::normalize(glm::cross(view, up));
+	float d = 0.5f * resolution.y / tan(fov.y*(PI/180.f)); // distance from the eye to the image plane
+	glm::vec3 viewTimesD = view*d;
+	glm::vec3 rightTimesHalfWidth = right*0.5f*resolution.x;
+	glm::vec3 upTimesHalfHeight = up*0.5f*resolution.y;
+	
+	float sampleStep = 1.f / SUPER_SAMPLE_GRID_SIZE;
+	
+	float subX = x - ((SUPER_SAMPLE_GRID_SIZE+1)/2.f)*sampleStep;	
+	float subY = 0.f;
+	int ind = 0;
+	for (int i = 0; i < SUPER_SAMPLE_GRID_SIZE; i++) {
+		subX += sampleStep;
+		subY = y - ((SUPER_SAMPLE_GRID_SIZE+1)/2.f)*sampleStep;	
+		for (int j = 0; j < SUPER_SAMPLE_GRID_SIZE; j++) {
+			subY += sampleStep;
+
+			ind = i*SUPER_SAMPLE_GRID_SIZE + j;
+			rays[ind].origin = eye;
+			rays[ind].direction = glm::normalize(viewTimesD + right*subX - rightTimesHalfWidth + upTimesHalfHeight - up*subY);
+		}
+	}
+	
+	return;
 }
 
 //Kernel that blacks out a given image buffer
@@ -104,62 +139,81 @@ __global__ void raytraceRay(glm::vec2 resolution, float time, cameraData cam, in
 
 	if((x<=resolution.x && y<=resolution.y)){
 		// colors[index] = generateRandomNumberFromThread(resolution, time, x, y);
-		colors[index] = glm::vec3(0.f, 0.f, 0.f);
-		ray r = raycastFromCameraKernel(resolution, time, x, y, cam.position, cam.view, cam.up, cam.fov);
+		glm::set(colors[index], 0.f, 0.f, 0.f);
+
+		// super-sample rays for pixel (x, y)
+		const int numOfSuperSamples = SUPER_SAMPLE_GRID_SIZE*SUPER_SAMPLE_GRID_SIZE;
+		ray superSampledRays[numOfSuperSamples];
+		if (numOfSuperSamples > 1) {						
+			superSampleRays(superSampledRays, resolution, time, x, y, cam.position, cam.view, cam.up, cam.fov);
+		} else {// Anti-Aliasing is disabled.
+			superSampledRays[0] = raycastFromCameraKernel(resolution, time, x, y, cam.position, cam.view, cam.up, cam.fov);
+		}
+
+		glm::vec3 sampledColor(0.f, 0.f, 0.f);
+		glm::vec3 sumOfSampledColors(0.f, 0.f, 0.f);
+
+		for (int n = 0; n < numOfSuperSamples; n++) {
+			const ray& r = superSampledRays[n];
+			glm::set(sampledColor, 0.f, 0.f, 0.f);
 		
-		glm::vec3 intersectionPoint, normal;
-		float intersectionDistance;
-		int intersectionGeomInd = findClosestIntersection(geoms, numberOfGeoms, r,
-			&intersectionPoint, &normal, &intersectionDistance);
+			glm::vec3 intersectionPoint, normal;
+			float intersectionDistance;
+			int intersectionGeomInd = findClosestIntersection(geoms, numberOfGeoms, r,
+				&intersectionPoint, &normal, &intersectionDistance);
 
-		if (intersectionGeomInd != -1) { // found the closest front object
-			const material& objectMaterial = materials[geoms[intersectionGeomInd].materialid];
-			glm::vec3 diffuseColor = objectMaterial.color;
-			glm::vec3 specularColor = objectMaterial.specularColor;
+			if (intersectionGeomInd != -1) { // found the closest front object
+				const material& objectMaterial = materials[geoms[intersectionGeomInd].materialid];
+				glm::vec3 diffuseColor = objectMaterial.color;
+				glm::vec3 specularColor = objectMaterial.specularColor;
 
-			if (objectMaterial.emittance > EPSILON) {
-				// object to be rendered is a light source
-				colors[index] = diffuseColor;
-				return;
-			}
-
-			/* Phong Illumination Model */
-			/* ka*diffuse_color + kd*diffuse_color*(N*L) + ks*specular_color*(N*H)^exp_n 
-			 * N(normal) : unit vector, the direction of the surface normal at the intersection 
-			 * L(ligtDirection) : unit vector, the direction of the vector to the light source from the intersection 
-			 * H : unit vector, the direction that is halfway between the direction to the light and the direction to the viewer */
-			glm::vec3 diffuse_sum(0.f, 0.f, 0.f);
-			glm::vec3 specular_sum(0.f, 0.f, 0.f);
-			for (int i = 0; i < numOfLights; i++) { // for each light source
-				int lightInd = lightIndices[i];
-				const staticGeom& light = geoms[lightInd];
-				glm::vec3 lightCenter = multiplyMV(light.transform, glm::vec4(0.f, 0.f, 0.f, 1.0f));
-				glm::vec3 lightDirection = glm::normalize(lightCenter - intersectionPoint);
-
-				// check occulusion for shadow
-				// NOTE: move the intersection point toward each light a little bit to avoid numerical error
-				ray lightRay; lightRay.origin = intersectionPoint + lightDirection*float(RAY_BIAS_AMOUNT); lightRay.direction = lightDirection;
-				int obstacleGeomInd = findClosestIntersection(geoms, numberOfGeoms, lightRay);
-				if (obstacleGeomInd != lightInd) {
+				if (objectMaterial.emittance > EPSILON) {
+					// object to be rendered is a light source
+					sumOfSampledColors += diffuseColor;
 					continue;
 				}
+
+				/* Phong Illumination Model */
+				/* ka*diffuse_color + kd*diffuse_color*(N*L) + ks*specular_color*(N*H)^exp_n 
+				 * N(normal) : unit vector, the direction of the surface normal at the intersection 
+				 * L(ligtDirection) : unit vector, the direction of the vector to the light source from the intersection 
+				 * H : unit vector, the direction that is halfway between the direction to the light and the direction to the viewer */
+				glm::vec3 diffuse_sum(0.f, 0.f, 0.f);
+				glm::vec3 specular_sum(0.f, 0.f, 0.f);
+				for (int i = 0; i < numOfLights; i++) { // for each light source
+					int lightInd = lightIndices[i];
+					const staticGeom& light = geoms[lightInd];
+					glm::vec3 lightCenter = multiplyMV(light.transform, glm::vec4(0.f, 0.f, 0.f, 1.0f));
+					glm::vec3 lightDirection = glm::normalize(lightCenter - intersectionPoint);
+
+					// check occulusion for shadow
+					// NOTE: move the intersection point toward each light a little bit to avoid numerical error
+					ray lightRay; lightRay.origin = intersectionPoint + lightDirection*float(RAY_BIAS_AMOUNT); lightRay.direction = lightDirection;
+					int obstacleGeomInd = findClosestIntersection(geoms, numberOfGeoms, lightRay);
+					if (obstacleGeomInd != lightInd) {
+						continue;
+					}
 				
-				glm::vec3 V = glm::normalize(-r.direction);
-				glm::vec3 H = glm::normalize(lightDirection + V);
+					glm::vec3 V = glm::normalize(-r.direction);
+					glm::vec3 H = glm::normalize(lightDirection + V);
 
-				const material& lightMaterial = materials[light.materialid];
-				glm::vec3 lightColor = lightMaterial.color;
-				diffuse_sum += lightColor * max(0.f, glm::dot(normal, lightDirection));
+					const material& lightMaterial = materials[light.materialid];
+					glm::vec3 lightColor = lightMaterial.color;
+					diffuse_sum += lightColor * max(0.f, glm::dot(normal, lightDirection));
 
-				if (glm::dot(normal, H) > EPSILON) {
-					specular_sum += lightColor * (glm::pow(glm::dot(normal, H), objectMaterial.specularExponent));
+					if (glm::dot(normal, H) > EPSILON) {
+						specular_sum += lightColor * (glm::pow(glm::dot(normal, H), objectMaterial.specularExponent));
+					}
 				}
+
+				sampledColor = glm::clamp(0.2f*diffuseColor + diffuseColor*diffuse_sum + specularColor*specular_sum, 0.f, 1.f); 
 			}
 
-			colors[index] = glm::clamp(0.2f*diffuseColor + diffuseColor*diffuse_sum + specularColor*specular_sum, 0.f, 1.f); 
-			//colors[index] = glm::clamp(0.2f*diffuseColor + diffuseColor*diffuse_sum, 0.f, 1.f); 
-			//colors[index] = normal;
-		}
+			sumOfSampledColors += sampledColor;
+		} // for each sub-pixel
+
+		// compute the naive average(filter would be applied though.)
+		colors[index] = sumOfSampledColors * (1.f/numOfSuperSamples);
 	}
 }
 
